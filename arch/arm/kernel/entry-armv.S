@@ -700,6 +700,7 @@ __und_usr_fault_32:
 __und_usr_fault_16:
 	mov	r1, #2
 1:	mov	r0, sp
+	mov	r0, sp
 	adr	lr, BSYM(ret_from_exception)
 	b	__und_fault
 ENDPROC(__und_usr_fault_32)
