@@ -533,8 +533,7 @@ do_cache_op(unsigned long start, unsigned long end, int flags)
 			end = vma->vm_end;
 
 		up_read(&mm->mmap_sem);
-		flush_cache_user_range(start, end);
-		return;
+		return flush_cache_user_range(start, end);
 	}
 	up_read(&mm->mmap_sem);
 	return -EINVAL;
