@@ -566,7 +566,7 @@ static int ubifs_unlink(struct inode *dir, struct dentry *dentry)
 	int sz_change = CALC_DENT_SIZE(dentry->d_name.len);
 	int err, budgeted = 1;
 	struct ubifs_budget_req req = { .mod_dent = 1, .dirtied_ino = 2 };
-	unsigned int saved_nlink = inode->i_nlink;
+	unsigned int uninitialized_var(saved_nlink);
 
 	/*
 	 * Budget request settings: deletion direntry, deletion inode (+1 for
