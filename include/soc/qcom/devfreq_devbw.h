@@ -1,4 +1,5 @@
-/* Copyright (c) 2011, The Linux Foundation. All rights reserved.
+/*
+ * Copyright (c) 2014, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -8,12 +9,25 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
  */
 
-#include "kgsl.h"
-#include "adreno.h"
+#ifndef _DEVFREQ_DEVBW_H
+#define _DEVFREQ_DEVBW_H
 
-/* Instantiate tracepoints */
-#define CREATE_TRACE_POINTS
-#include "adreno_a2xx_trace.h"
+#include <linux/devfreq.h>
+
+#ifdef CONFIG_MSM_DEVFREQ_DEVBW
+int devfreq_add_devbw(struct device *dev);
+int devfreq_remove_devbw(struct device *dev);
+#else
+static inline int devfreq_add_devbw(struct device *dev)
+{
+	return 0;
+}
+static inline int devfreq_remove_devbw(struct device *dev)
+{
+	return 0;
+}
+#endif
+
+#endif /* _DEVFREQ_DEVBW_H */

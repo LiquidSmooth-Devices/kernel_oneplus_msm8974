@@ -50,6 +50,13 @@
 #endif
 
 static int kgsl_pagetable_count = KGSL_PAGETABLE_COUNT;
+
+#ifdef CONFIG_ARM_LPAE
+#define KGSL_DMA_BIT_MASK	DMA_BIT_MASK(64)
+#else
+#define KGSL_DMA_BIT_MASK	DMA_BIT_MASK(32)
+#endif
+
 static char *ksgl_mmu_type;
 module_param_named(ptcount, kgsl_pagetable_count, int, 0);
 MODULE_PARM_DESC(kgsl_pagetable_count,
@@ -72,44 +79,6 @@ static void kgsl_mem_entry_detach_process(struct kgsl_mem_entry *entry);
 static void
 kgsl_put_process_private(struct kgsl_device *device,
 			 struct kgsl_process_private *private);
-/**
- * kgsl_trace_issueibcmds() - Call trace_issueibcmds by proxy
- * device: KGSL device
- * id: ID of the context submitting the command
- * cmdbatch: Pointer to kgsl_cmdbatch describing these commands
- * timestamp: Timestamp assigned to the command batch
- * flags: Flags sent by the user
- * result: Result of the submission attempt
- * type: Type of context issuing the command
- *
- * Wrap the issueibcmds ftrace hook into a function that can be called from the
- * GPU specific modules.
- */
-void kgsl_trace_issueibcmds(struct kgsl_device *device, int id,
-		struct kgsl_cmdbatch *cmdbatch,
-		unsigned int timestamp, unsigned int flags,
-		int result, unsigned int type)
-{
-	trace_kgsl_issueibcmds(device, id, cmdbatch,
-		timestamp, flags, result, type);
-}
-EXPORT_SYMBOL(kgsl_trace_issueibcmds);
-
-/**
- * kgsl_trace_regwrite - call regwrite ftrace function by proxy
- * device: KGSL device
- * offset: dword offset of the register being written
- * value: Value of the register being written
- *
- * Wrap the regwrite ftrace hook into a function that can be called from the
- * GPU specific modules.
- */
-void kgsl_trace_regwrite(struct kgsl_device *device, unsigned int offset,
-		unsigned int value)
-{
-	trace_kgsl_regwrite(device, offset, value);
-}
-EXPORT_SYMBOL(kgsl_trace_regwrite);
 
 /*
  * The memfree list contains the last N blocks of memory that have been freed.
@@ -3006,7 +2975,8 @@ error:
 	return result;
 }
 
-static int _kgsl_gpumem_sync_cache(struct kgsl_mem_entry *entry, int op)
+static int _kgsl_gpumem_sync_cache(struct kgsl_mem_entry *entry,
+				size_t offset, size_t length, unsigned int op)
 {
 	int ret = 0;
 	int cacheop;
@@ -3029,11 +2999,17 @@ static int _kgsl_gpumem_sync_cache(struct kgsl_mem_entry *entry, int op)
 		goto done;
 	}
 
+	if (!(op & KGSL_GPUMEM_CACHE_RANGE)) {
+		offset = 0;
+		length = entry->memdesc.size;
+	}
+
 	mode = kgsl_memdesc_get_cachemode(&entry->memdesc);
 	if (mode != KGSL_CACHEMODE_UNCACHED
 		&& mode != KGSL_CACHEMODE_WRITECOMBINE) {
-		trace_kgsl_mem_sync_cache(entry, op);
-		kgsl_cache_range_op(&entry->memdesc, cacheop);
+		trace_kgsl_mem_sync_cache(entry, offset, length, op);
+		ret = kgsl_cache_range_op(&entry->memdesc, offset,
+					length, cacheop);
 	}
 
 done:
@@ -3070,7 +3046,8 @@ kgsl_ioctl_gpumem_sync_cache(struct kgsl_device_private *dev_priv,
 		return -EINVAL;
 	}
 
-	ret = _kgsl_gpumem_sync_cache(entry, param->op);
+	ret = _kgsl_gpumem_sync_cache(entry, param->offset,
+					param->length, param->op);
 	kgsl_mem_entry_put(entry);
 	return ret;
 }
@@ -3156,9 +3133,13 @@ kgsl_ioctl_gpumem_sync_cache_bulk(struct kgsl_device_private *dev_priv,
 		__cpuc_flush_kern_all();
 	}
 
+	param->op &= ~KGSL_GPUMEM_CACHE_RANGE;
+
 	for (i = 0; i < actual_count; i++) {
 		if (!full_flush)
-			_kgsl_gpumem_sync_cache(entries[i], param->op);
+			_kgsl_gpumem_sync_cache(entries[i], 0,
+						entries[i]->memdesc.size,
+						param->op);
 		kgsl_mem_entry_put(entries[i]);
 	}
 end:
@@ -3186,10 +3167,14 @@ kgsl_ioctl_sharedmem_flush_cache(struct kgsl_device_private *dev_priv,
 		return -EINVAL;
 	}
 
-	ret = _kgsl_gpumem_sync_cache(entry, KGSL_GPUMEM_CACHE_FLUSH);
+	ret = _kgsl_gpumem_sync_cache(entry, 0, entry->memdesc.size,
+					KGSL_GPUMEM_CACHE_FLUSH);
 	kgsl_mem_entry_put(entry);
 	return ret;
 }
+
+/* The largest allowable alignment for a GPU object is 32MB */
+#define KGSL_MAX_ALIGN (32 * SZ_1M)
 
 /*
  * The common parts of kgsl_ioctl_gpumem_alloc and kgsl_ioctl_gpumem_alloc_id.
@@ -3217,11 +3202,13 @@ _gpumem_alloc(struct kgsl_device_private *dev_priv,
 	/* Cap the alignment bits to the highest number we can handle */
 
 	align = (flags & KGSL_MEMALIGN_MASK) >> KGSL_MEMALIGN_SHIFT;
-	if (align >= 32) {
-		KGSL_CORE_ERR("Alignment too big, restricting to 2^31\n");
+	if (align >= ilog2(KGSL_MAX_ALIGN)) {
+		KGSL_CORE_ERR("Alignment too large; restricting to %dK\n",
+			KGSL_MAX_ALIGN >> 10);
 
 		flags &= ~KGSL_MEMALIGN_MASK;
-		flags |= (31 << KGSL_MEMALIGN_SHIFT) & KGSL_MEMALIGN_MASK;
+		flags |= (ilog2(KGSL_MAX_ALIGN) << KGSL_MEMALIGN_SHIFT) &
+			KGSL_MEMALIGN_MASK;
 	}
 
 	entry = kgsl_mem_entry_create();
@@ -4191,7 +4178,12 @@ int kgsl_device_platform_probe(struct kgsl_device *device)
 		goto error_dest_work_q;
 	}
 
-	status = kgsl_allocate_contiguous(&device->memstore,
+	/* Check to see if our device can perform DMA correctly */
+	status = dma_set_coherent_mask(&pdev->dev, KGSL_DMA_BIT_MASK);
+	if (status)
+		goto error_close_mmu;
+
+	status = kgsl_allocate_contiguous(device, &device->memstore,
 		KGSL_MEMSTORE_SIZE);
 
 	if (status != 0) {
@@ -4224,67 +4216,6 @@ error:
 	return status;
 }
 EXPORT_SYMBOL(kgsl_device_platform_probe);
-
-int kgsl_postmortem_dump(struct kgsl_device *device, int manual)
-{
-	struct kgsl_pwrctrl *pwr = &device->pwrctrl;
-
-	BUG_ON(device == NULL);
-
-	kgsl_cffdump_hang(device);
-
-	/* For a manual dump, make sure that the system is idle */
-
-	if (manual) {
-		kgsl_active_count_wait(device, 0);
-
-		if (device->state == KGSL_STATE_ACTIVE)
-			kgsl_idle(device);
-	}
-
-	if (device->pm_dump_enable) {
-
-		KGSL_LOG_DUMP(device,
-			"POWER: START_STOP_SLEEP_WAKE = %d\n",
-			pwr->strtstp_sleepwake);
-
-		KGSL_LOG_DUMP(device,
-			"POWER: FLAGS = %08lX | ACTIVE POWERLEVEL = %08X",
-			pwr->power_flags, pwr->active_pwrlevel);
-
-		KGSL_LOG_DUMP(device, "POWER: INTERVAL TIMEOUT = %08X ",
-				pwr->interval_timeout);
-
-	}
-
-	/* Disable the idle timer so we don't get interrupted */
-	del_timer_sync(&device->idle_timer);
-
-	/* Force on the clocks */
-	kgsl_pwrctrl_wake(device, 0);
-
-	/* Disable the irq */
-	kgsl_pwrctrl_irq(device, KGSL_PWRFLAGS_OFF);
-
-	/*Call the device specific postmortem dump function*/
-	device->ftbl->postmortem_dump(device, manual);
-
-	/* On a manual trigger, turn on the interrupts and put
-	   the clocks to sleep.  They will recover themselves
-	   on the next event.  For a hang, leave things as they
-	   are until fault tolerance kicks in. */
-
-	if (manual) {
-		kgsl_pwrctrl_irq(device, KGSL_PWRFLAGS_ON);
-
-		/* try to go into a sleep mode until the next event */
-		kgsl_pwrctrl_request_state(device, KGSL_STATE_SLEEP);
-		kgsl_pwrctrl_sleep(device);
-	}
-
-	return 0;
-}
-EXPORT_SYMBOL(kgsl_postmortem_dump);
 
 void kgsl_device_platform_remove(struct kgsl_device *device)
 {

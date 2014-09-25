@@ -1,4 +1,5 @@
-/* Copyright (c) 2011, The Linux Foundation. All rights reserved.
+/*
+ * Copyright (c) 2014, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -8,13 +9,15 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
  */
 
-#include "kgsl.h"
-#include "z180.h"
-#include "z180_reg.h"
+#ifndef __I2C_QUP_H__
+#define __I2C_QUP_H__
 
-/* Instantiate tracepoints */
-#define CREATE_TRACE_POINTS
-#include "z180_trace.h"
+#ifdef CONFIG_I2C_QUP
+int __init qup_i2c_init_driver(void);
+#else
+static inline int __init qup_i2c_init_driver(void) { return 0; }
+#endif
+
+#endif /* __I2C_QUP_H__ */
