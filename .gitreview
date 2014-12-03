@@ -1,0 +1,5 @@
+[gerrit]
+host=gerrit.liquidsmooth.net
+port=29418
+project=LiquidSmooth-Devices/kernel_oneplus_msm8974
+defaultbranch=5.1
